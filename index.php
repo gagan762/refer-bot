@@ -13,7 +13,7 @@ $WITHDRAW_COST = 3;
 $API = "https://api.telegram.org/bot{$BOT_TOKEN}/";
 
 /* ================= DATABASE ================= */
-$dbPath = __DIR__ . "/bot.sqlite"; // use /var/data/bot.sqlite if you added Render disk
+$dbPath = __DIR__ . "/bot.sqlite"; // change to /var/data/bot.sqlite if using Render disk
 $db = new PDO("sqlite:$dbPath");
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
@@ -41,7 +41,7 @@ $db->exec("CREATE TABLE IF NOT EXISTS redemptions(
   redeemed_at TEXT DEFAULT CURRENT_TIMESTAMP
 )");
 
-/* ================= TELEGRAM HELPERS ================= */
+/* ================= TELEGRAM ================= */
 function tg($method,$data=[]){
   global $API;
   $ch=curl_init($API.$method);
@@ -49,33 +49,29 @@ function tg($method,$data=[]){
     CURLOPT_RETURNTRANSFER=>true,
     CURLOPT_POST=>true,
     CURLOPT_POSTFIELDS=>$data,
-    CURLOPT_CONNECTTIMEOUT=>5,
     CURLOPT_TIMEOUT=>10
   ]);
   $r=curl_exec($ch);
   curl_close($ch);
   return json_decode($r,true);
 }
-
 function sendMessage($chat,$text,$kb=null,$mode=null){
   $d=["chat_id"=>$chat,"text"=>$text,"disable_web_page_preview"=>true];
   if($kb)$d["reply_markup"]=json_encode($kb);
   if($mode)$d["parse_mode"]=$mode;
   tg("sendMessage",$d);
 }
-
 function editMessage($chat,$msg,$text,$kb=null,$mode=null){
   $d=["chat_id"=>$chat,"message_id"=>$msg,"text"=>$text];
   if($kb)$d["reply_markup"]=json_encode($kb);
   if($mode)$d["parse_mode"]=$mode;
   tg("editMessageText",$d);
 }
-
 function answerCb($id){
   tg("answerCallbackQuery",["callback_query_id"=>$id]);
 }
 
-/* ================= FORCE JOIN CHECK ================= */
+/* ================= FORCE JOIN ================= */
 function isJoined($chat,$uid){
   if(!$chat) return true;
   $r = tg("getChatMember",["chat_id"=>$chat,"user_id"=>$uid]);
@@ -122,7 +118,7 @@ function mainMenu($uid){
   $kb=[
     [["text"=>"📊 Stats","callback_data"=>"stats"]],
     [["text"=>"🎁 Withdraw","callback_data"=>"withdraw"]],
-    [["text"=>"🔗 My Referral Link","callback_data"=>"link"]],
+    [["text"=>"🔗 My Link","callback_data"=>"link"]],
   ];
   if($uid==$ADMIN_ID){
     $kb[]=[["text"=>"🛠 Admin Panel","callback_data"=>"admin"]];
@@ -136,6 +132,7 @@ function adminMenu(){
     [["text"=>"📦 Coupon Stock","callback_data"=>"stock"]],
     [["text"=>"👥 Users & Points","callback_data"=>"users"]],
     [["text"=>"📜 Redemption Log","callback_data"=>"logs"]],
+    [["text"=>"⬅️ Back","callback_data"=>"back"]],
   ]];
 }
 
@@ -159,7 +156,6 @@ if(isset($update["message"])){
   $chat=$m["chat"]["id"];
   $text=trim($m["text"]??"");
 
-  /* /start */
   if(preg_match('/^\/start(?:\s+(\d+))?/',$text,$a)){
     $ref=$a[1]??null;
     if($ref==$uid)$ref=null;
@@ -174,8 +170,8 @@ if(isset($update["message"])){
       }
     }
 
-    if(!isJoined($FORCE_JOIN_1,$uid) || !isJoined($FORCE_JOIN_2,$uid)){
-      sendMessage($chat,"🔒 Join both groups and click Verify.",joinKeyboard());
+    if(!isJoined($FORCE_JOIN_1,$uid)||!isJoined($FORCE_JOIN_2,$uid)){
+      sendMessage($chat,"🔒 Join both groups and verify.",joinKeyboard());
       echo"OK";exit;
     }
 
@@ -183,16 +179,15 @@ if(isset($update["message"])){
     echo"OK";exit;
   }
 
-  /* Admin add coupons (one per line) */
   if($uid==$ADMIN_ID && strpos($text,"\n")!==false){
     $lines=preg_split("/\r?\n/",$text);
-    $added=0;
+    $a=0;
     foreach($lines as $c){
       $c=trim($c);
       if(!$c)continue;
-      try{$db->prepare("INSERT INTO coupons(code) VALUES(?)")->execute([$c]);$added++;}catch(Exception $e){}
+      try{$db->prepare("INSERT INTO coupons(code) VALUES(?)")->execute([$c]);$a++;}catch(Exception $e){}
     }
-    sendMessage($chat,"✅ Added $added coupons",adminMenu());
+    sendMessage($chat,"✅ Added $a coupons",adminMenu());
     echo"OK";exit;
   }
 }
@@ -232,19 +227,13 @@ if(isset($update["callback_query"])){
     if(stock($db)<=0){
       editMessage($chat,$msg,"⚠️ No coupons available.",mainMenu($uid));exit;
     }
-
     deduct3($db,$uid);
     $code=takeCoupon($db);
-    if(!$code){
-      addPoint($db,$uid);addPoint($db,$uid);addPoint($db,$uid);
-      editMessage($chat,$msg,"⚠️ Error. Try later.",mainMenu($uid));exit;
-    }
-
     $left=user($db,$uid)["points"];
+
     $db->prepare("INSERT INTO redemptions(user_id,coupon_code,points_left)
                   VALUES(?,?,?)")->execute([$uid,$code,$left]);
 
-    /* ADMIN NOTIFICATION */
     sendMessage($ADMIN_ID,
       "🔔 Coupon Redeemed\n\n👤 User: $uid\n🎁 Code: $code\n⭐ Points Left: $left"
     );
@@ -256,8 +245,12 @@ if(isset($update["callback_query"])){
     editMessage($chat,$msg,"🛠 Admin Panel",adminMenu());
   }
 
+  if($d=="back"){
+    editMessage($chat,$msg,"🏠 Main Menu",mainMenu($uid));
+  }
+
   if($d=="stock" && $uid==$ADMIN_ID){
-    editMessage($chat,$msg,"📦 Stock: ".stock($db),adminMenu());
+    editMessage($chat,$msg,"📦 Coupon Stock: ".stock($db),adminMenu());
   }
 
   if($d=="users" && $uid==$ADMIN_ID){
