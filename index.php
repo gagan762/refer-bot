@@ -1,9 +1,9 @@
 <?php
-ini_set('display_errors', '0');
-ini_set('log_errors', '1');
+ini_set('display_errors','0');
+ini_set('log_errors','1');
 error_reporting(E_ALL);
 
-/* ========== CONFIG ========== */
+/* ================= CONFIG ================= */
 $BOT_TOKEN = getenv("BOT_TOKEN");
 $ADMIN_ID  = intval(getenv("ADMIN_ID"));
 $FORCE_JOIN_1 = getenv("FORCE_JOIN_1");
@@ -12,8 +12,9 @@ $WITHDRAW_COST = 3;
 
 $API = "https://api.telegram.org/bot{$BOT_TOKEN}/";
 
-/* ========== DATABASE ========== */
-$db = new PDO("sqlite:" . __DIR__ . "/bot.sqlite");
+/* ================= DATABASE ================= */
+$dbPath = __DIR__ . "/bot.sqlite"; // use /var/data/bot.sqlite if you added Render disk
+$db = new PDO("sqlite:$dbPath");
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 $db->exec("CREATE TABLE IF NOT EXISTS users(
@@ -40,47 +41,49 @@ $db->exec("CREATE TABLE IF NOT EXISTS redemptions(
   redeemed_at TEXT DEFAULT CURRENT_TIMESTAMP
 )");
 
-/* ========== TELEGRAM HELPERS ========== */
-function tg($method, $data = []) {
+/* ================= TELEGRAM HELPERS ================= */
+function tg($method,$data=[]){
   global $API;
-  $ch = curl_init($API.$method);
-  curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_POST => true,
-    CURLOPT_POSTFIELDS => $data
+  $ch=curl_init($API.$method);
+  curl_setopt_array($ch,[
+    CURLOPT_RETURNTRANSFER=>true,
+    CURLOPT_POST=>true,
+    CURLOPT_POSTFIELDS=>$data,
+    CURLOPT_CONNECTTIMEOUT=>5,
+    CURLOPT_TIMEOUT=>10
   ]);
-  $res = curl_exec($ch);
+  $r=curl_exec($ch);
   curl_close($ch);
-  return json_decode($res, true);
+  return json_decode($r,true);
 }
 
-function sendMessage($chat, $text, $kb=null, $mode=null){
-  $d=["chat_id"=>$chat,"text"=>$text];
-  if($kb) $d["reply_markup"]=json_encode($kb);
-  if($mode) $d["parse_mode"]=$mode;
+function sendMessage($chat,$text,$kb=null,$mode=null){
+  $d=["chat_id"=>$chat,"text"=>$text,"disable_web_page_preview"=>true];
+  if($kb)$d["reply_markup"]=json_encode($kb);
+  if($mode)$d["parse_mode"]=$mode;
   tg("sendMessage",$d);
 }
 
 function editMessage($chat,$msg,$text,$kb=null,$mode=null){
   $d=["chat_id"=>$chat,"message_id"=>$msg,"text"=>$text];
-  if($kb) $d["reply_markup"]=json_encode($kb);
-  if($mode) $d["parse_mode"]=$mode;
+  if($kb)$d["reply_markup"]=json_encode($kb);
+  if($mode)$d["parse_mode"]=$mode;
   tg("editMessageText",$d);
 }
 
-function answerCallback($id){
+function answerCb($id){
   tg("answerCallbackQuery",["callback_query_id"=>$id]);
 }
 
-/* ========== FORCE JOIN CHECK ========== */
-function joined($chat,$uid){
+/* ================= FORCE JOIN CHECK ================= */
+function isJoined($chat,$uid){
   if(!$chat) return true;
   $r = tg("getChatMember",["chat_id"=>$chat,"user_id"=>$uid]);
   if(!$r || !$r["ok"]) return false;
   return in_array($r["result"]["status"],["member","administrator","creator"]);
 }
 
-/* ========== DB HELPERS ========== */
+/* ================= DB HELPERS ================= */
 function user($db,$id){
   $s=$db->prepare("SELECT * FROM users WHERE user_id=?");
   $s->execute([$id]);
@@ -113,8 +116,8 @@ function takeCoupon($db){
   }
 }
 
-/* ========== KEYBOARDS ========== */
-function menu($uid){
+/* ================= KEYBOARDS ================= */
+function mainMenu($uid){
   global $ADMIN_ID;
   $kb=[
     [["text"=>"📊 Stats","callback_data"=>"stats"]],
@@ -145,18 +148,18 @@ function joinKeyboard(){
   ]];
 }
 
-/* ========== UPDATE ========== */
+/* ================= UPDATE ================= */
 $update=json_decode(file_get_contents("php://input"),true);
 if(!$update){echo"OK";exit;}
 
-/* ========== MESSAGE HANDLER ========== */
+/* ================= MESSAGE ================= */
 if(isset($update["message"])){
   $m=$update["message"];
   $uid=$m["from"]["id"];
   $chat=$m["chat"]["id"];
   $text=trim($m["text"]??"");
 
-  /* START */
+  /* /start */
   if(preg_match('/^\/start(?:\s+(\d+))?/',$text,$a)){
     $ref=$a[1]??null;
     if($ref==$uid)$ref=null;
@@ -171,30 +174,30 @@ if(isset($update["message"])){
       }
     }
 
-    if(!joined($FORCE_JOIN_1,$uid) || !joined($FORCE_JOIN_2,$uid)){
-      sendMessage($chat,"🔒 Join both groups then verify.",joinKeyboard());
+    if(!isJoined($FORCE_JOIN_1,$uid) || !isJoined($FORCE_JOIN_2,$uid)){
+      sendMessage($chat,"🔒 Join both groups and click Verify.",joinKeyboard());
       echo"OK";exit;
     }
 
-    sendMessage($chat,"🎉WELCOME TO VIP REFER BOT",menu($uid));
+    sendMessage($chat,"🎉 WELCOME TO VIP REFER BOT",mainMenu($uid));
     echo"OK";exit;
   }
 
-  /* ADMIN ADD COUPONS */
+  /* Admin add coupons (one per line) */
   if($uid==$ADMIN_ID && strpos($text,"\n")!==false){
     $lines=preg_split("/\r?\n/",$text);
-    $a=0;
+    $added=0;
     foreach($lines as $c){
       $c=trim($c);
       if(!$c)continue;
-      try{$db->prepare("INSERT INTO coupons(code) VALUES(?)")->execute([$c]);$a++;}catch(Exception $e){}
+      try{$db->prepare("INSERT INTO coupons(code) VALUES(?)")->execute([$c]);$added++;}catch(Exception $e){}
     }
-    sendMessage($chat,"✅ Added $a coupons",adminMenu());
+    sendMessage($chat,"✅ Added $added coupons",adminMenu());
     echo"OK";exit;
   }
 }
 
-/* ========== CALLBACK HANDLER ========== */
+/* ================= CALLBACK ================= */
 if(isset($update["callback_query"])){
   $c=$update["callback_query"];
   $uid=$c["from"]["id"];
@@ -202,43 +205,51 @@ if(isset($update["callback_query"])){
   $msg=$c["message"]["message_id"];
   $d=$c["data"];
   $u=user($db,$uid);
-  answerCallback($c["id"]);
+  answerCb($c["id"]);
 
   if($d=="verify"){
-    if(joined($FORCE_JOIN_1,$uid)&&joined($FORCE_JOIN_2,$uid)){
-      editMessage($chat,$msg,"🎉WELCOME TO VIP REFER BOT",menu($uid));
+    if(isJoined($FORCE_JOIN_1,$uid)&&isJoined($FORCE_JOIN_2,$uid)){
+      editMessage($chat,$msg,"🎉 WELCOME TO VIP REFER BOT",mainMenu($uid));
     }else{
       editMessage($chat,$msg,"❌ Join both groups first.",joinKeyboard());
     }
   }
 
   if($d=="stats"){
-    editMessage($chat,$msg,"⭐ Your Points: ".$u["points"],menu($uid));
+    editMessage($chat,$msg,"⭐ Your Points: ".$u["points"],mainMenu($uid));
   }
 
   if($d=="link"){
     $me=tg("getMe");
     $link="https://t.me/".$me["result"]["username"]."?start=".$uid;
-    editMessage($chat,$msg,"🔗 Your Referral Link:\n<code>$link</code>",menu($uid),"HTML");
+    editMessage($chat,$msg,"🔗 Your Referral Link:\n<code>$link</code>",mainMenu($uid),"HTML");
   }
 
   if($d=="withdraw"){
     if($u["points"]<3){
-      editMessage($chat,$msg,"❌ Need 3 points.",menu($uid));exit;
+      editMessage($chat,$msg,"❌ Need 3 points.",mainMenu($uid));exit;
     }
     if(stock($db)<=0){
-      editMessage($chat,$msg,"⚠️ No coupons available.",menu($uid));exit;
+      editMessage($chat,$msg,"⚠️ No coupons available.",mainMenu($uid));exit;
     }
+
     deduct3($db,$uid);
     $code=takeCoupon($db);
     if(!$code){
       addPoint($db,$uid);addPoint($db,$uid);addPoint($db,$uid);
-      editMessage($chat,$msg,"⚠️ Error. Try later.",menu($uid));exit;
+      editMessage($chat,$msg,"⚠️ Error. Try later.",mainMenu($uid));exit;
     }
+
     $left=user($db,$uid)["points"];
-    $db->prepare("INSERT INTO redemptions(user_id,coupon_code,points_left) VALUES(?,?,?)")
-       ->execute([$uid,$code,$left]);
-    editMessage($chat,$msg,"🎉 Your Coupon:\n<code>$code</code>",menu($uid),"HTML");
+    $db->prepare("INSERT INTO redemptions(user_id,coupon_code,points_left)
+                  VALUES(?,?,?)")->execute([$uid,$code,$left]);
+
+    /* ADMIN NOTIFICATION */
+    sendMessage($ADMIN_ID,
+      "🔔 Coupon Redeemed\n\n👤 User: $uid\n🎁 Code: $code\n⭐ Points Left: $left"
+    );
+
+    editMessage($chat,$msg,"🎉 Your Coupon:\n<code>$code</code>",mainMenu($uid),"HTML");
   }
 
   if($d=="admin" && $uid==$ADMIN_ID){
